@@ -1,0 +1,395 @@
+---
+title: "Prevendo Tendências Macroeconômicas"
+output: html_notebook
+---
+
+Autor: Stefani Ramalho 
+
+Projeto: Data Science Academy
+
+Conjuntos de dados: [Two Sigma Investments](https://www.kaggle.com/c/two-sigma-financial-modeling/)
+
+## Two Sigma Financial Modeling Challenge
+
+### 1 - Introdução
+
+Como podemos usar as ferramentas e a inteligência do mundo para prever
+resultados econômicos que nunca podem ser totalmente previsíveis? Essa
+questão está no centro de inúmeras atividades econômicas em todo o mundo -
+inclusive na Two Sigma Investments, que vem aplicando tecnologia e estratégias
+sistemáticas ao comércio financeiro desde 2001.
+
+Por mais de 15 anos, a Two Sigma tem estado na vanguarda da aplicação de
+tecnologia e ciência de dados às previsões financeiras. Embora seus avanços
+pioneiros em big data, inteligência artificial e aprendizado de máquina no mundo
+financeiro tenham impulsionado o mercado, como acontece com todos os outros
+avanços científicos, eles são levados a progredir continuamente.
+
+A oportunidade econômica depende da capacidade de fornecer previsões
+singularmente precisas em um mundo de incertezas. Ao prever com precisão os
+movimentos financeiros, você aprenderá sobre abordagens orientadas
+cientificamente para desbloquear recursos preditivos significativos. A Two Sigma
+está animada para encontrar valor preditivo e obter uma melhor compreensão
+das habilidades oferecidas pela multidão global de ciência de dados.
+
+Este conjunto de dados contém recursos anônimos relacionados a um valor
+variável no tempo para um instrumento financeiro. Cada instrumento tem um id.
+O tempo é representado pelo recurso 'timestamp' e a variável a predizer é 'y'.
+Nenhuma informação adicional será fornecida sobre o significado dos recursos, as
+transformações que foram aplicadas a eles, a escala de tempo ou o tipo de
+instrumentos que estão incluídos nos dados. Além disso, de acordo com as regras,
+os alunos não devem usar dados além dos dados vinculados ao site.
+
+### 2 - Carregando os pacotes e visualizando os dados
+
+```{r}
+# Carregando os modulos
+library(h5)
+library(tidyverse)
+library(gridExtra)
+library(car)
+library(corrr)
+library(tidymodels)
+library(randomForest)
+library(magrittr)
+```
+
+```{r}
+# Criando um objeto com arquivo H5
+dados <- h5file('dados/train.h5', mode = 'r')
+
+# Lendo os nomes do atributos
+colunas <- dados['train/axis0'][]
+
+# Carreando os dados para treinamento
+df <- bind_cols(as_tibble(dados['train/block0_values'][]),
+                     as_tibble(dados['train/block1_values'][]))
+
+# Nomeando os atributos ao dataset
+df %<>% set_names(colunas)
+
+# Encerrando o arquivo h5
+h5close(dados)
+
+# Visualizando os dados
+str(df)
+```
+
+### 3 - Analise exploratoria
+
+Distribuicao de frequencia do atributo dependente Y. visualmente existe uma distribuicao normal, porem ha um ponto a ser investigado nas extremidades do histograma.
+
+```{r}
+# Criando um histograma e grafico de densidade do atributi y
+ggplot(df, aes(x = y)) +
+  geom_histogram(aes(y=..density..), bins = 50, fill = 'sky blue') +
+  geom_density(color = 'red3') +
+  theme_classic() + 
+  ggtitle("Distribuicao de frequencia do atributo Y") +
+  theme(
+    plot.title = element_text(color = "gray10", size = 12))
+```
+
+Conforme observado no histograma, existe uma grande quantidade de outliers tanto nos valores superiores como inferiores do atributo y.
+
+```{r}
+# Criando um boxplot com base no atributo y
+ggplot(df, aes(x = '', y = y)) +
+  geom_boxplot(fill = 'sky blue', color = 'grey15') +
+  theme_classic() + 
+  ggtitle("Boxplot do atributo Y") + xlab('') +
+  coord_flip() + 
+  theme(
+    plot.title = element_text(color = "gray10", size = 12))
+```
+
+Os valores extremos estao fora do intervalo do 1 e ultimo percentil, onde serao tratadas na fase de pre processamento.
+
+```{r, fig.width = 10, fig.height = 4}
+# Criando um objeto com um histograma referente aos valores de y abaixo do percentil 5%
+p1 <- df %>% select(y) %>% filter(y < quantile(y, 0.01)) %>%
+  ggplot(aes(x = y)) +
+  geom_histogram( bins = 50, fill = 'sky blue') +
+  theme_classic() + 
+  ggtitle("Outliers abaixo") +
+  theme(
+    plot.title = element_text(color = "gray10", size = 10, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank())
+
+# Criando um objeto com um histograma referente aos valores de y acima do percentil 95%
+p2 <- df %>% select(y) %>% filter(y > quantile(y, 0.99)) %>%
+  ggplot(aes(x = y)) +
+  geom_histogram(bins = 50, fill = 'sky blue') +
+  theme_classic() + 
+  ggtitle("Outliers acima") +
+  theme(
+    plot.title = element_text(color = "gray10", size = 10, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank())
+
+# Criando um objeto com um histograma referente aos valores de y entre os percentis 5% e 95%
+p3 <- df %>% select(y) %>% filter(between(y, quantile(y, 0.01), quantile(y, 0.99))) %>%
+  ggplot(aes(x = y)) +
+  geom_histogram(aes(y=..density..), bins = 50, fill = 'sky blue') +
+  geom_density(color = 'red3') +
+  theme_classic() + 
+  ggtitle("Sem Outliers") +
+  theme(
+    plot.title = element_text(color = "gray10", size = 10, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank())
+
+# Plotando os resultados
+grid.arrange(p1, p3, p2, ncol=3, top = "Distribuição de frequência - atributo Y")
+```
+
+Distribuicao dos valores de timestamp onde apresenta uma pequena distribuicao para a direita.
+
+```{r}
+# grafico de densidade da distribuicao de frequencia do atributo timestamp
+ggplot(df, aes(x = timestamp)) +
+  geom_density(alpha = 0.3,  fill = 'sky blue', color = 'orange') +
+  theme_classic() + 
+  ggtitle("Densidade do atributo timestamp") +
+  theme(
+    plot.title = element_text(color = "gray10", size = 12))
+```
+
+Ha uma mudanca no padrao dos valores de y quando o atributo timestamp esta menor que 500 ou maior que 1000. Dentro desse range os valores estao aparantemente lineares.
+
+```{r, fig.width = 10, fig.height = 7}
+# boxplot do atributi y x timestamp 
+p1 <- ggplot(df, aes(x = timestamp, y = y)) +
+  geom_boxplot(aes(group = cut_width(timestamp, 100)), fill = 'sky blue') +
+  theme_classic() +
+  ggtitle("Boxplot do atributo y por grupos de timestamp")
+
+# scatterplot de timestamp x media de y
+p2 <- df %>% group_by(timestamp) %>%
+  summarise(media = mean(y)) %>%
+  ggplot(aes(y = media, x = timestamp)) +
+  geom_point(color = 'blue3') +
+  theme_classic() +
+  theme(
+    plot.title = element_text(color = "gray10", size = 8)) +
+  ggtitle("Media do atributo y por timestamp") +
+  xlab("timestamp") + ylab("média de y")
+
+# scatterplot de timestamp x desvio padrao de y
+p3 <- df %>% group_by(timestamp) %>%
+  summarise(desvio = sd(y)) %>%
+  ggplot(aes(y = desvio, x = timestamp)) +
+  geom_point(color = 'blue3') +
+  theme_classic() +
+  theme(
+    plot.title = element_text(color = "gray10", size = 8)) +
+  ggtitle("Desvio Padrão do atributo por timestamp") +
+  xlab("timestamp") + ylab("desvio de y")
+
+# scatterplot de timestamp x contagem de y
+p4 <- df %>% group_by(timestamp) %>%
+  summarise(total = length(y)) %>%
+  ggplot(aes(y = total, x = timestamp)) +
+  geom_point(color = 'blue3') +
+  theme_classic() +
+  theme(
+    plot.title = element_text(color = "gray10", size = 8)) +
+  ggtitle("Total do atributo y por timestamp") +
+  xlab("timestamp") + ylab("total de y")
+
+# Plotando os resultados
+grid.arrange(p1,p2,p3,p4, layout_matrix = rbind(c(1,1,1),c(2,3,4)))
+```
+
+Existe um grande volume de valores ausentes e outliers em varios atributos.
+
+```{r}
+# resumo estatistico dos dados
+summary(df)
+```
+
+### 4 - Pre processamento e limpeza dos dados
+
+Removendo valores aunsentes, onde serao exluidos itens com mais de 20% de valores ausentes e itens com o percentual menor serao subistituidos pela media.
+
+```{r, fig.width = 6, fig.height = 10}
+# funcao para totalizar o valor relativo de dados ausentes
+busca_valores_na <- function(x){
+  sum(is.na(x)) / length(x)
+}
+
+# objeto com o total de valores NA por atributos
+valores_na <- map_dfc(df, busca_valores_na)
+
+# Plotando os atributos que contenham mais de 20% de valores ausentes
+valores_na %>%  gather(key = "Atributo", value = "valor_na") %>%
+  filter(valor_na > .2) %>%
+  ggplot(aes(x = reorder(Atributo, valor_na), y = valor_na, fill = valor_na)) +
+  geom_bar(stat = 'identity', show.legend = FALSE) +
+  scale_fill_gradient(low='sky blue', high='blue') +
+  geom_text(aes(label=scales::percent(valor_na)), hjust=1.1, size = 2.5, color = 'white') +
+  coord_flip() +
+  theme_classic() +
+  ggtitle("Atributos com valores missing superior a 20%") + 
+  ylab("% Valores NA") + ylab("Atributos")
+
+# Itens com mais de 20% de valores missings + atributo id
+remover <- c('derived_2', 'derived_4', 'fundamental_1', 'fundamental_2', 'fundamental_3', 'fundamental_5', 'fundamental_6', 'fundamental_8', 'fundamental_9', 'fundamental_11', 'fundamental_13', 'fundamental_14', 'fundamental_15', 'fundamental_16', 'fundamental_22', 'fundamental_23', 'fundamental_24', 'fundamental_26', 'fundamental_28', 'fundamental_29', 'fundamental_30', 'fundamental_31', 'fundamental_34', 'fundamental_35', 'fundamental_37', 'fundamental_38', 'fundamental_39', 'fundamental_43', 'fundamental_44', 'fundamental_46', 'fundamental_47', 'fundamental_49', 'fundamental_50', 'fundamental_51', 'fundamental_54', 'fundamental_55', 'fundamental_56', 'fundamental_57', 'fundamental_60', 'fundamental_61', 'fundamental_63', 'id')
+
+# criando novo dataframe removendo atributos com mais de 20% de valores ausentes e substituindo demais valores pela media
+df_clean <- df %>%
+  select(-remover) %>%
+  mutate_all(list(~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+```
+
+Selecao de atributos com base no modelo rando forest
+
+```{r}
+# Dividindo os dados em treino e teste
+train <-  sample_frac(df_clean, .01)
+
+# Criando um modelo com randon forest para feature selection
+model_rf <- randomForest(y ~ ., data = train, ntree = 10, importance=TRUE)
+
+# removendo a base temporaria usada para cirar o modelo
+rm(train)
+
+# Plotando os atributos com maior importancia
+varImpPlot(model_rf)
+
+# Atributos selecionados por MSE + y
+features <- c("technical_35", "technical_19", "technical_21", "technical_40", "technical_27", "fundamental_53",
+              "fundamental_42", "fundamental_59", "technical_3", "technical_24", "y")
+
+# Atribuindo somente os atributos selecionados ao dataset_clean
+df_clean %<>% select(features)
+```
+
+Com base no teste VIF nao existe multicoliniearidade com base nos atributos selecionados, pois os valores estao abaixo de 10.
+
+```{r}
+# Função para calcular o teste vif
+calcular_vif <- function(dados){
+
+    dados = dados %>% select(-y)
+    resultado = NULL
+    
+  for (item in colnames(dados)){
+
+    # Modelo de regressao
+    model = lm(paste(item, "~ ."), data = dados)
+
+    # Criando um data frame com o resultado do teste vif
+    resultado <- bind_rows(resultado,
+                           vif(model) %>% 
+                            as.data.frame() %>%
+                            rownames_to_column() %>%
+                            rename("VIF" = 2, "v2" = rowname) %>%
+                            mutate(v1 = item))
+  }
+  
+  return(resultado)
+}
+
+
+# Realizando o teste vif
+resultado <- calcular_vif(df_clean)
+
+# Plotando os resultados
+ggplot(resultado, aes(x = v1, y = v2, fill = VIF)) +
+  geom_tile(show.legend = FALSE, color = 'white') +
+  geom_text(aes(label=round(VIF,2))) +
+  scale_fill_gradient(low='sky blue', high='blue') +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("Teste Vif")
+```
+
+Conforme visto na exploracao dos dados, existem muitos outliers que podem influenciar no resultado do modelo.
+
+```{r}
+# Funcao para remover os outliers com base no intervalo interquartil de 1.5
+remove_out <- function(dados){
+  
+  # Primeiro e terceiro quartil
+  first_q = as.numeric(quantile(dados$y, 0.25))
+  third_q = as.numeric(quantile(dados$y, 0.70))
+  
+  # Distancia interquartil
+  iqr = third_q - first_q
+  
+  # limites para outliers
+  menor = first_q - 1.5 * iqr
+  maior = third_q + 1.5 * iqr
+  
+  dados %<>% filter(between(y,menor, maior))
+  
+  return(dados)
+
+}
+
+# removendo outliers
+df_clean <- remove_out(df_clean)
+
+# Criando um histograma e grafico de densidade do atributi y
+ggplot(df_clean, aes(x = y)) +
+  geom_histogram(bins = 100, fill = 'sky blue') +
+  theme_classic() + 
+  ggtitle("Distribuicao de frequencia do atributo Y sem outliers") +
+  theme(
+    plot.title = element_text(color = "gray10", size = 12))
+```
+
+A correlacao lineta com o atributo y  en relação aos demais atributis é bem baixa, conforme podemos relatar pela imagem logo abaixo.
+
+```{r}
+# Plotando as correlacoes entre os atributos
+df_clean %>% cor() %>%
+  corrplot::corrplot(method = "square")
+```
+
+### 5 - Modelagem e Avaliação dos modelos
+
+```{r}
+# Dividindo os dados para 70% treino e 30% teste
+set.seed(124)
+trainIndex <-  initial_split(df_clean, strata = "y", p = 0.7)
+
+train <- training(trainIndex)
+test  <- testing(trainIndex)
+
+# salvando os dados de treino e teste
+write_csv(train, "dados//train.csv")
+write_csv(test, "dados//test.csv")
+```
+
+```{r}
+# Carregando os dados para treinamento
+train <- read_csv("dados//train.csv")
+test <- read_csv("dados//test.csv")
+```
+
+```{r}
+# Modelo xgb
+model_xgb <- boost_tree(mode = "regression",
+                        mtry = 8,
+                        trees = 300,
+                        min_n = 6,
+                        learn_rate = 0.01) %>%
+  set_engine("xgboost") %>%
+  fit(y ~ ., data = train)
+
+# Prevendo os valores de teste
+pred <- predict.model_fit(model_xgb, test)
+```
+
+```{r}
+# Histograma com os valores previstos x testes
+bind_cols(test, pred) %>% 
+  select(y, .pred) %>%
+  gather(key = "key", value = "value") %>%
+  ggplot(aes(x = value, fill = key)) +
+  geom_histogram(bins = 50) +
+  theme_classic()
+```
